@@ -1,0 +1,175 @@
+# Spec Delta: Bandwidth Control Capability
+
+## ADDED Requirements
+
+### Requirement: The system SHALL provide Per-File Bandwidth Limiting
+
+The system SHALL limit download speed on a per-file basis.
+
+#### Scenario: Enforce file-specific rate limit
+**Given** a download with a 1MB/s speed limit
+**When** the download is active
+**Then** the average transfer rate over 10 seconds is within 5% of 1MB/s
+**And** bursts do not exceed 1.5MB/s for more than 1 second
+**And** the rate limit is enforced without excessive CPU usage
+
+#### Scenario: Disable per-file limit
+**Given** a download with no specific rate limit
+**When** the download is active
+**Then** the download proceeds at maximum available speed
+**And** only global limits apply
+
+#### Scenario: Change rate limit during download
+**Given** a download in progress at 500KB/s
+**When** the limit is changed to 2MB/s
+**Then** the download speed increases within 2 seconds
+**When** the limit is changed to 100KB/s
+**Then** the download speed decreases within 2 seconds
+
+---
+
+### Requirement: The system SHALL provide Global Bandwidth Limiting
+
+The system SHALL limit total download speed across all active downloads.
+
+#### Scenario: Enforce global rate limit with multiple downloads
+**Given** 5 active downloads with no individual limits
+**And** a global limit of 5MB/s
+**When** all downloads are transferring data
+**Then** the total transfer rate is within 5% of 5MB/s
+**And** bandwidth is distributed fairly among downloads
+
+#### Scenario: Global limit overrides individual limits
+**Given** 3 downloads each limited to 2MB/s (total 6MB/s)
+**And** a global limit of 4MB/s
+**When** all downloads are active
+**Then** the total transfer rate does not exceed 4MB/s
+**And** each download receives approximately 1.33MB/s
+
+#### Scenario: Dynamic global limit adjustment
+**Given** active downloads consuming 3MB/s
+**When** the global limit is reduced from 5MB/s to 1MB/s
+**Then** the total transfer rate decreases to 1MB/s within 3 seconds
+**And** bandwidth is redistributed among active downloads
+
+---
+
+### Requirement: The system SHALL provide Token Bucket Algorithm
+
+The system SHALL implement bandwidth throttling using the token bucket algorithm.
+
+#### Scenario: Token accumulation
+**Given** a download limited to 1MB/s (1,048,576 bytes/s)
+**When** no data is being transferred
+**Then** tokens accumulate at the rate of 1,048,576 tokens/second
+**And** the token bucket has a maximum capacity of 2,097,152 tokens (2 seconds of burst)
+
+#### Scenario: Token consumption
+**Given** a download with available tokens
+**When** 256KB of data is received
+**Then** 262,144 tokens are consumed
+**And** the download can continue if tokens remain
+**And** the download blocks if tokens are depleted
+
+#### Scenario: Blocking on depleted tokens
+**Given** a download with zero tokens available
+**When** attempting to write data
+**Then** the thread sleeps until sufficient tokens accumulate
+**And** the sleep duration is calculated based on token replenishment rate
+**And** wakeup occurs within 10ms of tokens becoming available
+
+---
+
+### Requirement: The system SHALL provide Bandwidth Measurement
+
+The system SHALL accurately measure current download speeds.
+
+#### Scenario: Real-time speed calculation
+**Given** a download in progress
+**When** progress is measured
+**Then** instantaneous speed is calculated over a 1-second sliding window
+**And** average speed is calculated since download start
+**And** speed is reported in human-readable units (KB/s, MB/s)
+
+#### Scenario: Speed reporting accuracy
+**Given** a download transferring data at a known rate
+**When** speed is measured over 10 seconds
+**Then** the reported speed is within 2% of the actual rate
+**And** speed updates occur at least once per second
+
+---
+
+### Requirement: The system SHALL provide Bandwidth Distribution
+
+The system SHALL fairly distribute bandwidth among concurrent downloads.
+
+#### Scenario: Equal priority distribution
+**Given** 4 active downloads with equal priority
+**And** a global limit of 4MB/s
+**When** all downloads are actively transferring
+**Then** each download receives approximately 1MB/s
+**And** variance between download speeds is less than 10%
+
+#### Scenario: Adaptive redistribution
+**Given** 3 active downloads sharing 3MB/s
+**When** 1 download completes
+**Then** the remaining 2 downloads each receive 1.5MB/s within 5 seconds
+**And** bandwidth is reallocated without manual intervention
+
+#### Scenario: Handling idle downloads
+**Given** 5 queued downloads but only 2 actively transferring data
+**And** a global limit of 5MB/s
+**When** bandwidth is distributed
+**Then** each active download can use up to 2.5MB/s
+**And** idle downloads in "connecting" state do not consume quota
+
+---
+
+### Requirement: The system SHALL provide Precision at Low Rates
+
+The system SHALL accurately throttle at low bandwidth limits.
+
+#### Scenario: Very low rate limit (10KB/s)
+**Given** a download limited to 10KB/s (10,240 bytes/s)
+**When** the download is active
+**Then** data is transferred in controlled bursts
+**And** average speed over 60 seconds is within 5% of 10KB/s
+**And** excessive sleeping does not cause timeouts
+
+#### Scenario: Sub-second granularity
+**Given** a download limited to 500KB/s
+**When** data is transferred
+**Then** rate enforcement checks occur at least every 256KB
+**And** floating-point token accounting prevents precision loss
+
+---
+
+## Performance Targets
+
+- **Rate accuracy**: Within ±5% of target over 10-second windows
+- **CPU overhead**: Throttling consumes < 2% CPU per active download
+- **Latency penalty**: < 50ms added latency due to throttling logic
+- **Fair distribution**: Variance < 10% among equal-priority downloads
+
+---
+
+## Implementation Notes
+
+### Token Bucket Parameters
+- **Bucket capacity**: 2× the per-second rate (allows 2-second bursts)
+- **Refill interval**: Continuous (checked every chunk write)
+- **Minimum sleep**: 10ms (avoid excessive context switching)
+
+### Global vs. Per-File Coordination
+- Global limit implemented as a shared token bucket
+- Per-file limits implemented as separate buckets
+- Enforcement: `min(per_file_tokens, global_tokens_per_file)`
+
+---
+
+## Cross-References
+
+- **Depends on**: `concurrency` (thread-safe token bucket access)
+- **Related to**: `core-download` (integration with download loop)
+- **Related to**: `terminal-ui` (display current speeds)
+- **Related to**: `state-management` (persist bandwidth settings)

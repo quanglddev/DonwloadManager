@@ -1,0 +1,235 @@
+# Spec Delta: State Management Capability
+
+## ADDED Requirements
+
+### Requirement: The system SHALL provide Download State Persistence
+
+The system SHALL persist download state to enable resumption after application restarts.
+
+#### Scenario: Save state on progress update
+**Given** a download in progress at 30% completion
+**When** the application is forcibly terminated
+**And** the application restarts
+**Then** the download is listed with 30% progress
+**And** the partial file exists on disk
+**And** the download can be resumed
+
+#### Scenario: Incremental state saving
+**Given** an active download
+**When** progress updates occur
+**Then** state is persisted every 5% progress change or 30 seconds (whichever is sooner)
+**And** state writes do not block the download thread
+**And** atomic writes prevent partial/corrupted state files
+
+#### Scenario: State recovery on corrupted file
+**Given** a state file that is corrupted or invalid JSON
+**When** the application starts
+**Then** the corrupted state is moved to a backup location
+**And** the application starts with an empty download list
+**And** the user is notified of the state file corruption
+
+---
+
+### Requirement: The system SHALL provide JSON State Format
+
+The system SHALL use JSON for human-readable state persistence.
+
+#### Scenario: Serialize download metadata
+**Given** a download with metadata (URL, destination, progress, checksum)
+**When** state is saved
+**Then** the JSON includes all fields necessary for resumption
+**And** timestamps are in ISO 8601 format
+**And** file paths use forward slashes for cross-platform compatibility
+
+#### Scenario: Version migration
+**Given** a state file from version 1.0
+**When** the application version 1.1 loads the state
+**Then** the state is migrated to the new schema
+**And** old fields are preserved or converted
+**And** the migration is logged
+
+#### Scenario: Validate state schema on load
+**Given** a state file with missing required fields
+**When** the state is loaded
+**Then** invalid entries are skipped
+**And** valid entries are loaded successfully
+**And** validation errors are logged
+
+---
+
+### Requirement: The system SHALL provide Settings Persistence
+
+The system SHALL persist user settings across sessions.
+
+#### Scenario: Save global settings
+**Given** user-configured settings (max concurrent downloads, global bandwidth limit)
+**When** settings are modified
+**Then** settings are saved to the state file
+**And** settings persist across application restarts
+
+#### Scenario: Default settings on first run
+**Given** the application is run for the first time
+**When** no settings file exists
+**Then** default settings are applied
+**And** a new settings file is created with defaults
+
+#### Scenario: Per-download settings
+**Given** a download with custom bandwidth limit
+**When** the download is saved
+**Then** per-download settings are included in the state
+**And** settings are restored when the download is loaded
+
+---
+
+### Requirement: The system SHALL provide Partial File Management
+
+The system SHALL manage partial download files robustly.
+
+#### Scenario: Create partial file with unique name
+**Given** a download for `file.zip`
+**When** the download starts
+**Then** a partial file `file.zip.part` is created
+**And** the partial file is hidden from casual browsing (platform-specific)
+
+#### Scenario: Resume from partial file
+**Given** a partial file `file.zip.part` with 5MB downloaded
+**When** the download resumes
+**Then** the download continues appending to the partial file
+**And** the file size grows from 5MB
+
+#### Scenario: Finalize partial file on completion
+**Given** a completed download with `file.zip.part`
+**When** checksum verification succeeds
+**Then** `file.zip.part` is renamed to `file.zip`
+**And** the final file has the correct permissions
+**And** the partial file no longer exists
+
+#### Scenario: Clean up orphaned partial files
+**Given** partial files with no corresponding state entries
+**When** the application starts
+**Then** orphaned partial files older than 7 days are listed
+**And** the user is prompted to delete or keep them
+
+---
+
+### Requirement: The system SHALL provide Atomic State Updates
+
+The system SHALL ensure state file integrity under all conditions.
+
+#### Scenario: Write-then-rename pattern
+**Given** a state update is triggered
+**When** state is written to disk
+**Then** data is written to a temporary file (`.tmp` suffix)
+**And** the temporary file is flushed and synced
+**And** the temporary file is renamed to the actual state file
+**And** no partial writes are visible to readers
+
+#### Scenario: Handle write failures
+**Given** a state update during disk full condition
+**When** the write fails
+**Then** the error is logged
+**And** the previous valid state file is preserved
+**And** retries occur every 60 seconds until successful
+
+---
+
+### Requirement: The system SHALL provide Download History
+
+The system SHALL maintain a history of completed downloads.
+
+#### Scenario: Record completed download
+**Given** a download completes successfully
+**When** the download is finalized
+**Then** an entry is added to the history
+**And** the entry includes URL, destination, completion time, and file size
+
+#### Scenario: History size limits
+**Given** a download history with 1000 entries
+**When** a new download completes
+**Then** the oldest entry is removed
+**And** the history never exceeds 1000 entries
+
+#### Scenario: Query download history
+**Given** a completed download from 3 days ago
+**When** the user views history
+**Then** the download is listed with metadata
+**And** history can be filtered by date range or URL pattern
+
+---
+
+### Requirement: The system SHALL provide State File Location
+
+The system SHALL store state in platform-appropriate locations.
+
+#### Scenario: Linux/Unix state location
+**Given** the application runs on Linux
+**When** the state file is created
+**Then** it is stored at `~/.config/download_manager/state.json`
+**And** the directory is created with `0700` permissions
+
+#### Scenario: Windows state location
+**Given** the application runs on Windows
+**When** the state file is created
+**Then** it is stored at `%APPDATA%\download_manager\state.json`
+**And** the directory is created with appropriate ACLs
+
+#### Scenario: Custom state location
+**Given** the user specifies `--state-dir /custom/path`
+**When** the application starts
+**Then** state is stored in the specified directory
+**And** the custom path is validated for write access
+
+---
+
+## Data Schema
+
+### Download Entry
+```json
+{
+  "id": "uuid-v4",
+  "url": "https://example.com/file.zip",
+  "destination": "/path/to/file.zip",
+  "state": "paused",
+  "bytesDownloaded": 52428800,
+  "totalBytes": 104857600,
+  "checksum": {
+    "algorithm": "sha256",
+    "value": "abc123..."
+  },
+  "bandwidthLimit": 1048576,
+  "createdAt": "2025-10-23T10:30:00Z",
+  "completedAt": null,
+  "lastError": null
+}
+```
+
+### Global Settings
+```json
+{
+  "version": "1.0",
+  "maxConcurrentDownloads": 4,
+  "globalBandwidthLimit": 5242880,
+  "defaultChunkSize": 262144,
+  "autoRetryOnNetworkError": true,
+  "notificationsEnabled": true,
+  "emailAddress": "user@example.com"
+}
+```
+
+---
+
+## Performance Targets
+
+- **State save latency**: < 100ms for 100 downloads
+- **State load latency**: < 500ms for 1000 downloads
+- **Disk writes**: Batched, max once every 30 seconds during active downloads
+- **File size**: < 1KB per download entry (compressed JSON)
+
+---
+
+## Cross-References
+
+- **Enables**: `core-download` (resume capability)
+- **Related to**: `concurrency` (thread-safe state access)
+- **Related to**: `terminal-ui` (display loaded state)
+- **Related to**: `bandwidth-control` (persist bandwidth settings)

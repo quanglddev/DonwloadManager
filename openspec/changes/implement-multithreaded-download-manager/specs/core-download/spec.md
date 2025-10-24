@@ -1,0 +1,157 @@
+# Spec Delta: Core Download Capability
+
+## ADDED Requirements
+
+### Requirement: The system SHALL provide provide HTTP/HTTPS Download Support
+
+The system SHALL download files via HTTP/HTTPS protocols using libcurl.
+
+#### Scenario: Basic file download
+**Given** a valid HTTP/HTTPS URL
+**When** a download is initiated
+**Then** the file is retrieved and saved to the specified destination
+**And** progress is tracked (bytes downloaded, total bytes)
+**And** HTTP errors (4xx, 5xx) are reported to the user
+
+#### Scenario: HTTPS certificate validation
+**Given** an HTTPS URL
+**When** a download is initiated
+**Then** SSL/TLS certificates are validated
+**And** downloads fail with clear errors if certificates are invalid
+**And** certificate validation can be optionally disabled for testing
+
+---
+
+### Requirement: The system SHALL provide Download Resumption
+
+The system SHALL support resuming interrupted downloads using HTTP range requests.
+
+#### Scenario: Resume after network interruption
+**Given** a download in progress at 50% completion
+**When** the network connection is lost
+**And** the connection is restored
+**Then** the download resumes from the last saved position
+**And** no duplicate data is downloaded
+**And** the final file is byte-for-byte identical to a fresh download
+
+#### Scenario: Resume after application restart
+**Given** a download in progress
+**When** the application is closed
+**And** the application is restarted
+**Then** the download can be resumed from the last saved position
+**And** partial file data is preserved
+
+#### Scenario: Server does not support ranges
+**Given** an HTTP server that does not advertise `Accept-Ranges` support
+**When** a resume is attempted
+**Then** the download restarts from the beginning
+**And** the user is notified that resumption is not available
+
+---
+
+### Requirement: The system SHALL provide Pause and Cancel Operations
+
+The system SHALL allow pausing and canceling downloads.
+
+#### Scenario: Pause active download
+**Given** a download in progress
+**When** the user pauses the download
+**Then** the download stops within 5 seconds
+**And** partial data is saved to disk
+**And** the download state is marked as "paused"
+
+#### Scenario: Cancel active download
+**Given** a download in progress
+**When** the user cancels the download
+**Then** the download stops immediately
+**And** partial files are deleted
+**And** the download is removed from the active queue
+
+#### Scenario: Resume paused download
+**Given** a paused download
+**When** the user resumes the download
+**Then** the download continues from the paused position
+**And** progress tracking reflects the resumed state
+
+---
+
+### Requirement: The system SHALL provide File Integrity Verification
+
+The system SHALL verify downloaded file integrity using checksums.
+
+#### Scenario: Verify completed download with SHA-256
+**Given** a download with an expected SHA-256 checksum
+**When** the download completes
+**Then** the file's checksum is computed
+**And** the download is marked as verified if checksums match
+**And** the download is marked as corrupted if checksums mismatch
+
+#### Scenario: Handle corrupted downloads
+**Given** a completed download that fails checksum verification
+**When** the verification fails
+**Then** the user is notified of the corruption
+**And** the file is optionally moved to a quarantine directory
+**And** the user can retry the download
+
+#### Scenario: Download without checksum
+**Given** a download without an expected checksum
+**When** the download completes
+**Then** no verification is performed
+**And** the download is marked as complete
+
+---
+
+### Requirement: The system SHALL provide Error Handling and Retry Logic
+
+The system SHALL handle network errors with automatic retry logic.
+
+#### Scenario: Retry on transient network error
+**Given** a download in progress
+**When** a transient network error occurs (timeout, connection reset)
+**Then** the download is retried up to 3 times with exponential backoff
+**And** each retry attempt is logged
+**And** the download fails if all retries are exhausted
+
+#### Scenario: Immediate failure on permanent error
+**Given** a download attempt
+**When** a permanent error occurs (HTTP 404, 403)
+**Then** the download fails immediately without retry
+**And** the user receives a descriptive error message
+
+#### Scenario: Disk full error
+**Given** a download in progress
+**When** the disk becomes full
+**Then** the download is paused
+**And** all active downloads are paused
+**And** the user is notified to free disk space
+
+---
+
+### Requirement: The system SHALL provide Multiple Concurrent Downloads
+
+The system SHALL download multiple files concurrently.
+
+#### Scenario: Download multiple files simultaneously
+**Given** 5 files queued for download
+**When** the maximum concurrent downloads is set to 3
+**Then** exactly 3 downloads are active at any time
+**And** remaining downloads wait in the queue
+**And** completed downloads trigger queued downloads to start
+
+#### Scenario: Configurable concurrency limit
+**Given** active downloads
+**When** the user changes the concurrency limit from 3 to 5
+**Then** additional downloads start immediately up to the new limit
+**When** the limit is reduced from 5 to 2
+**Then** no new downloads start until active count drops to 2
+**And** in-progress downloads are not interrupted
+
+---
+
+## Cross-References
+
+- **Depends on**: `concurrency` (thread pool for parallel downloads)
+- **Depends on**: `bandwidth-control` (rate limiting integration)
+- **Depends on**: `state-management` (persistence for resume capability)
+- **Related to**: `terminal-ui` (progress reporting)
+- **Related to**: `notifications` (completion/error alerts)
