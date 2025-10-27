@@ -1,0 +1,1 @@
+. "/root/RnD/GitHub/my_download_manager/build-debug/conanrunenv-debug-x86_64.sh"

@@ -14,11 +14,11 @@
 **Goal**: Set up CMake project with dependency management and create "Hello World" application.
 
 **Acceptance Criteria**:
-- [ ] CMakeLists.txt configures C++17 standard
-- [ ] vcpkg or Conan configured for dependency management
-- [ ] Project builds without warnings
-- [ ] Executable runs and prints "Download Manager v1.0"
-- [ ] Build works on Windows (MinGW64) and/or Linux
+- [x] CMakeLists.txt configures C++17 standard
+- [x] vcpkg or Conan configured for dependency management
+- [x] Project builds without warnings
+- [x] Executable runs and prints "Download Manager v1.0"
+- [x] Build works on Windows (MinGW64) and/or Linux
 
 **Approach**:
 1. Create `CMakeLists.txt` with C++17 requirements
