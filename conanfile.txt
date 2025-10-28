@@ -1,16 +1,12 @@
 [requires]
 fmt/10.2.1
-libcurl/8.*
+libcurl/[>=8 <9]
 
 [generators]
 CMakeDeps
 CMakeToolchain
 
 [options]
-# Ensure HTTPS via OpenSSL on Ubuntu
-libcurl:with_ssl=openssl
-# Keep things minimal for now:
-libcurl:with_ssh=False
-libcurl:with_brotli=False
-libcurl:with_zstd=False
-libcurl:with_nghttp2=False   # enable later if you want HTTP/2
+libcurl/*:with_ssl=openssl
+libcurl/*:with_zlib=True
+libcurl/*:shared=False

@@ -1,22 +1,41 @@
 cmake_minimum_required(VERSION 3.16)
+project(DownloadManager VERSION 1.0.0 LANGUAGES CXX)
 
-# 1) Name the project and set the C++ standard
-project(download_manager LANGUAGES CXX)
+# Export compile commands for VS Code IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# C++17 standard, no compiler extensions
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF) # enforce pure C++17, no compiler-specific extensions
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 2) Add the executable
-add_executable(download_manager src/main.cpp)
+# Output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# 3) Warnings: different flags for GCC/Clang vs MSVC
+# Strict warnings
 if(MSVC)
-    target_compile_options(download_manager PRIVATE /W4 /permissive- /EHsc)
+    add_compile_options(/W4 /permissive-)
 else()
-    target_compile_options(download_manager PRIVATE -Wall -Wextra -Wpedantic)
+    add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# 4) Find and link dependencies provided by Conan (fmt here)
-#    Conan generates config files that make this find_package work.
-find_package(fmt CONFIG REQUIRED)
-target_link_libraries(download_manager PRIVATE fmt::fmt)
+# Find packages installed by Conan
+find_package(fmt REQUIRED)
+find_package(CURL REQUIRED)
+
+# Main executable
+add_executable(download_manager
+    src/main.cpp
+    src/http_client.cpp
+)
+
+target_include_directories(download_manager PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(download_manager PRIVATE
+    fmt::fmt
+    CURL::libcurl
+)

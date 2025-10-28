@@ -54,11 +54,11 @@ cmake --build build
 **Goal**: Download a single file using libcurl's easy interface.
 
 **Acceptance Criteria**:
-- [ ] libcurl integrated via CMake FetchContent
-- [ ] Download a test file (e.g., `http://httpbin.org/bytes/1048576` - 1MB)
-- [ ] File saved to disk with correct size
-- [ ] HTTP errors (404, 500) are detected and reported
-- [ ] HTTPS URLs work with certificate validation
+- [x] libcurl integrated via CMake FetchContent
+- [x] Download a test file (e.g., `http://httpbin.org/bytes/1048576` - 1MB)
+- [x] File saved to disk with correct size
+- [x] HTTP errors (404, 500) are detected and reported
+- [x] HTTPS URLs work with certificate validation
 
 **Approach**:
 1. Add libcurl to `CMakeLists.txt` using FetchContent

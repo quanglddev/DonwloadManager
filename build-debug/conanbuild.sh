@@ -1,1 +1,0 @@
-. "/root/RnD/GitHub/my_download_manager/build-debug/conanbuildenv-debug-x86_64.sh"
