@@ -97,11 +97,11 @@ ls -lh test.bin  # Should show ~1MB file
 **Goal**: Display real-time download progress in the terminal (plain text, no TUI yet).
 
 **Acceptance Criteria**:
-- [ ] Progress displayed as percentage and bytes downloaded
-- [ ] Download speed calculated in KB/s or MB/s
-- [ ] Progress updates every second
-- [ ] ETA calculated based on current speed
-- [ ] Progress uses libcurl's built-in progress callback
+- [x] Progress displayed as percentage and bytes downloaded
+- [x] Download speed calculated in KB/s or MB/s
+- [x] Progress updates every second
+- [x] ETA calculated based on current speed
+- [x] Progress uses libcurl's built-in progress callback
 
 **Approach**:
 1. Set `CURLOPT_XFERINFOFUNCTION` callback for progress updates

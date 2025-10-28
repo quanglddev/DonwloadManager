@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <curl/curl.h>
+#include <chrono>
 
 /**
  * HTTP client for downloading files using libcurl.
@@ -54,12 +55,49 @@ private:
      * @return Number of bytes written (size * nmemb on success)
      */
     static size_t writeCallback(char *ptr, size_t size, size_t nmemb, void *userdata);
-    
+
+    /**
+     * Static progress callback for libcurl.
+     * Called periodically during download to report progress.
+     *
+     * @param clientp User data pointer (we pass 'this')
+     * @param dltotal Total bytes to download (0 if unknown)
+     * @param dlnow Bytes downloaded so far
+     * @param ultotal Total bytes to upload (not used)
+     * @param ulnow Bytes uploaded so far (not used)
+     * @return 0 to continue, non-zero to abort
+     */
+    static int progressCallback(void *clientp,
+                                curl_off_t dltotal,
+                                curl_off_t dlnow,
+                                curl_off_t ultotal,
+                                curl_off_t ulnow);
+
+    /**
+     * Format bytes into human-readable string (e.g., "52.3 MB")
+     *
+     * @param bytes Number of bytes
+     * @return Formatted string
+     */
+    std::string formatBytes(curl_off_t bytes) const;
+
+    /**
+     * Format duration into human-readable string (e.g., "2m 30s")
+     *
+     * @param seconds Duration in seconds
+     * @return Formatted string
+     */
+    std::string formatDuration(long seconds) const;
+
     /**
      * Get human-readable HTTP status text for a status code.
-     * 
+     *
      * @param code HTTP status code (e.g., 200, 404, 500)
      * @return Descriptive text for the status code
      */
     std::string getHttpStatusText(long code) const;
+
+    std::chrono::steady_clock::time_point startTime_;
+    curl_off_t lastDownloaded_ = 0;
+    std::chrono::steady_clock::time_point lastProgressTime_;
 };
