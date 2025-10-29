@@ -136,11 +136,11 @@ ls -lh test.bin  # Should show ~1MB file
 **Goal**: Robust file handling with `<filesystem>`, create partial files, and handle edge cases.
 
 **Acceptance Criteria**:
-- [ ] Check if destination directory exists; create if needed
-- [ ] Check available disk space before download
-- [ ] Create `.part` file for partial downloads
-- [ ] Rename `.part` to final filename on completion
-- [ ] Handle file permission errors gracefully
+- [x] Check if destination directory exists; create if needed
+- [x] Check available disk space before download
+- [x] Create `.part` file for partial downloads
+- [x] Rename `.part` to final filename on completion
+- [x] Handle file permission errors gracefully
 
 **Approach**:
 1. Use `std::filesystem::path` for cross-platform path handling

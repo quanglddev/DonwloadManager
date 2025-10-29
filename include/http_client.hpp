@@ -4,6 +4,7 @@
 #include <memory>
 #include <curl/curl.h>
 #include <chrono>
+#include <filesystem>
 
 /**
  * HTTP client for downloading files using libcurl.
@@ -97,7 +98,36 @@ private:
      */
     std::string getHttpStatusText(long code) const;
 
+    /**
+     * Ensure the directory for a file path exists, creating it if needed.
+     *
+     * @param filePath Path to the file (directory will be extracted)
+     * @return true if directory exists or was created successfully
+     */
+    bool ensureDirectoryExists(const std::filesystem::path &filePath);
+
+    /**
+     * Check if there's enough disk space for a download.
+     *
+     * @param filePath Path where file will be saved
+     * @param requiredBytes Number of bytes needed
+     * @return true if enough space is available
+     */
+    bool checkDiskSpace(const std::filesystem::path &filePath, curl_off_t requiredBytes);
+
+    /**
+     * Generate the .part filename for a destination path.
+     *
+     * @param destination Final destination path
+     * @return Path with .part extension added
+     */
+    std::filesystem::path makePartPath(const std::filesystem::path &destination) const;
+
     std::chrono::steady_clock::time_point startTime_;
     curl_off_t lastDownloaded_ = 0;
     std::chrono::steady_clock::time_point lastProgressTime_;
+    
+    // Track if we've checked disk space (to do it once in progress callback if HEAD failed)
+    bool diskSpaceChecked_ = false;
+    std::filesystem::path currentDestination_;
 };

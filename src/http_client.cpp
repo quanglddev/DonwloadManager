@@ -39,11 +39,36 @@ size_t HttpClient::writeCallback(char *ptr, size_t size, size_t nmemb, void *use
 
 bool HttpClient::downloadFile(const std::string &url, const std::string &destination)
 {
-    // Open output file in binary mode
-    std::ofstream outFile(destination, std::ios::binary);
+    // Convert to filesystem path for easier manipulation
+    std::filesystem::path finalPath(destination);
+    std::filesystem::path partPath = makePartPath(finalPath);
+
+    // 1. Ensure destination directory exists
+    if (!ensureDirectoryExists(finalPath))
+    {
+        return false; // Error already set in lastError_
+    }
+
+    // 2. Remove any existing .part file from previous failed attempt
+    try
+    {
+        if (std::filesystem::exists(partPath))
+        {
+            std::filesystem::remove(partPath);
+        }
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        lastError_ = fmt::format("Failed to remove old .part file {}: {}",
+                                 partPath.string(), e.what());
+        return false;
+    }
+
+    // 3. Open .part file for writing (not final destination yet)
+    std::ofstream outFile(partPath, std::ios::binary);
     if (!outFile)
     {
-        lastError_ = fmt::format("Cannot open file for writing: {}", destination);
+        lastError_ = fmt::format("Cannot open file for writing: {}", partPath.string());
         return false;
     }
 
@@ -76,6 +101,36 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     startTime_ = std::chrono::steady_clock::now();
     lastDownloaded_ = 0;
     lastProgressTime_ = startTime_;
+    diskSpaceChecked_ = false;
+    currentDestination_ = finalPath;
+
+    // 7. Try to get content length for disk space check
+    // Note: This is set BEFORE download starts via headers
+    curl_easy_setopt(curl_.get(), CURLOPT_NOBODY, 1L); // HEAD request to get size
+    CURLcode headRes = curl_easy_perform(curl_.get());
+
+    curl_off_t contentLength = 0;
+    
+    if (headRes == CURLE_OK)
+    {
+        curl_easy_getinfo(curl_.get(), CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
+    }
+    
+    // Check disk space if we know the size (from HEAD or we'll check in progress callback)
+    if (contentLength > 0)
+    {
+        if (!checkDiskSpace(finalPath, contentLength))
+        {
+            outFile.close();
+            std::filesystem::remove(partPath); // Clean up .part file
+            return false;
+        }
+        diskSpaceChecked_ = true;  // Mark as checked
+    }
+
+    // Reset to actual download (not HEAD request)
+    curl_easy_setopt(curl_.get(), CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl_.get(), CURLOPT_HTTPGET, 1L);
 
     // Perform the download
     CURLcode res = curl_easy_perform(curl_.get());
@@ -90,6 +145,7 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     if (res != CURLE_OK)
     {
         lastError_ = fmt::format("Download failed: {}", curl_easy_strerror(res));
+        // Leave .part file for potential resume in TASK-005
         return false;
     }
 
@@ -100,10 +156,22 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     if (httpCode >= 400)
     {
         lastError_ = fmt::format("HTTP error {}: {}", httpCode, getHttpStatusText(httpCode));
+        // Leave .part file for debugging
         return false;
     }
 
-    // Success!
+    // 8. Success! Rename .part to final filename (atomic operation)
+    try
+    {
+        std::filesystem::rename(partPath, finalPath);
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        lastError_ = fmt::format("Download succeeded but failed to rename {} to {}: {}",
+                                 partPath.string(), finalPath.string(), e.what());
+        return false;
+    }
+
     return true;
 }
 
@@ -119,6 +187,18 @@ int HttpClient::progressCallback(void *clientp,
 
     // clientp is our HttpClient* (we pass it in downloadFile)
     auto *client = static_cast<HttpClient *>(clientp);
+
+    // If we haven't checked disk space yet and now know the total size, check it
+    // Do this FIRST before throttling to ensure safety checks happen immediately
+    if (!client->diskSpaceChecked_ && dltotal > 0)
+    {
+        if (!client->checkDiskSpace(client->currentDestination_, dltotal))
+        {
+            // Abort download by returning non-zero
+            return 1;
+        }
+        client->diskSpaceChecked_ = true;
+    }
 
     // Throttle updates to once per 200ms to avoid terminal flooding
     auto now = std::chrono::steady_clock::now();
@@ -286,4 +366,89 @@ std::string HttpClient::getHttpStatusText(long code) const
     default:
         return "Unknown Status";
     }
+}
+
+// Ensure directory exists for file path
+bool HttpClient::ensureDirectoryExists(const std::filesystem::path &filePath)
+{
+    try
+    {
+        // Get the parent directory of the file
+        auto directory = filePath.parent_path();
+
+        // If parent directory is empty (file in current dir), nothing to create
+        if (directory.empty())
+        {
+            return true;
+        }
+
+        // Check if directory already exists
+        if (std::filesystem::exists(directory))
+        {
+            return true;
+        }
+
+        // Create all parent directories (like mkdir -p)
+        std::filesystem::create_directories(directory);
+        return true;
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        lastError_ = fmt::format("Failed to create directory for {}: {}",
+                                 filePath.string(), e.what());
+        return false;
+    }
+}
+
+// Check if there's enough disk space
+bool HttpClient::checkDiskSpace(const std::filesystem::path &filePath, curl_off_t requiredBytes)
+{
+    try
+    {
+        // If size is unknown (0 or negative), skip the check
+        if (requiredBytes <= 0)
+        {
+            return true;
+        }
+
+        // Get the directory where file will be saved
+        auto directory = filePath.parent_path();
+        if (directory.empty())
+        {
+            directory = "."; // Current directory
+        }
+
+        // Query filesystem space information
+        auto spaceInfo = std::filesystem::space(directory);
+
+        // spaceInfo.available = bytes available to non-privileged process
+        // Add 10% buffer to be safe (some filesystems reserve space)
+        curl_off_t requiredWithBuffer = requiredBytes + (requiredBytes / 10);
+
+        if (spaceInfo.available < static_cast<std::uintmax_t>(requiredWithBuffer))
+        {
+            lastError_ = fmt::format("Insufficient disk space: need {} (+ 10% buffer) but only {} available",
+                                     formatBytes(requiredBytes),
+                                     formatBytes(static_cast<curl_off_t>(spaceInfo.available)));
+            return false;
+        }
+
+        return true;
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        // If we can't check space, log warning but proceed
+        // (some filesystems don't support space queries)
+        fmt::print(stderr, "Warning: Unable to check disk space: {}\n", e.what());
+        return true; // Optimistically proceed
+    }
+}
+
+// Generate .part filename
+std::filesystem::path HttpClient::makePartPath(const std::filesystem::path &destination) const
+{
+    // Simply append ".part" to the filename
+    std::filesystem::path partPath = destination;
+    partPath += ".part";
+    return partPath;
 }
