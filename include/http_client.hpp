@@ -126,8 +126,14 @@ private:
     std::chrono::steady_clock::time_point startTime_;
     curl_off_t lastDownloaded_ = 0;
     std::chrono::steady_clock::time_point lastProgressTime_;
-    
+    std::chrono::steady_clock::time_point lastPrintedTime_;
+
     // Track if we've checked disk space (to do it once in progress callback if HEAD failed)
     bool diskSpaceChecked_ = false;
+    bool isTerminalOutput_ = true;
+    double lastPrintedPercentage_ = -1.0;
     std::filesystem::path currentDestination_;
+
+    // Resume support: offset to resume from (0 = start from beginning)
+    curl_off_t resumeOffset_ = 0;
 };

@@ -1,7 +1,11 @@
 #include "http_client.hpp"
-#include <fstream>
-#include <iostream>
+
 #include <chrono>
+#include <cstdio>
+#include <fstream>
+#include <stdexcept>
+#include <unistd.h>
+
 #include <fmt/core.h>
 
 HttpClient::HttpClient() : curl_(curl_easy_init(), curl_easy_cleanup)
@@ -15,6 +19,9 @@ HttpClient::HttpClient() : curl_(curl_easy_init(), curl_easy_cleanup)
 
     // Set a user-agent (some servers block requests without one)
     curl_easy_setopt(curl_.get(), CURLOPT_USERAGENT, "DownloadManager/1.90");
+
+    // Detect if stdout is a terminal to decide how we render the progress bar
+    isTerminalOutput_ = ::isatty(fileno(stdout));
 }
 
 // Destructor: unique_ptr handles cleanup automatically
@@ -30,9 +37,12 @@ size_t HttpClient::writeCallback(char *ptr, size_t size, size_t nmemb, void *use
     auto *outFile = static_cast<std::ofstream *>(userdata);
 
     // Write chunk to file
-    outFile->write(ptr, totalSize);
+    outFile->write(ptr, static_cast<std::streamsize>(totalSize));
+    if (!outFile->good())
+    {
+        return 0; // Abort transfer if write fails
+    }
 
-    // Return bytes written (libcurl checks this matches totalSize)
     // If we return 0 or a different value, libcurl aborts the transfer
     return totalSize;
 }
@@ -49,32 +59,58 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
         return false; // Error already set in lastError_
     }
 
-    // 2. Remove any existing .part file from previous failed attempt
+    // 2. Check if .part file exists from previous download (for resume)
+    resumeOffset_ = 0; // Default: start from beginning
     try
     {
         if (std::filesystem::exists(partPath))
         {
-            std::filesystem::remove(partPath);
+            // Get size of existing partial file
+            resumeOffset_ = static_cast<curl_off_t>(std::filesystem::file_size(partPath));
+            if (resumeOffset_ > 0)
+            {
+                fmt::print("Found existing partial download ({} already downloaded).\nAttempting to resume...\n",
+                           formatBytes(resumeOffset_));
+            }
+            else
+            {
+                // Empty .part file, remove it and start fresh
+                std::filesystem::remove(partPath);
+            }
         }
     }
     catch (const std::filesystem::filesystem_error &e)
     {
-        lastError_ = fmt::format("Failed to remove old .part file {}: {}",
-                                 partPath.string(), e.what());
-        return false;
+        // If we can't read the .part file, remove it and start fresh
+        fmt::print(stderr, "Warning: Could not check .part file ({}). Starting fresh download.\n", e.what());
+        try
+        {
+            std::filesystem::remove(partPath);
+        }
+        catch (...)
+        {
+            // Ignore cleanup errors
+        }
+        resumeOffset_ = 0;
     }
 
-    // 3. Open .part file for writing (not final destination yet)
-    std::ofstream outFile(partPath, std::ios::binary);
+    // 3. Open .part file for writing
+    // If resuming (resumeOffset_ > 0), open in APPEND mode to continue writing
+    // If starting fresh (resumeOffset_ == 0), open in TRUNCATE mode (default)
+    std::ios::openmode fileMode = std::ios::binary;
+    if (resumeOffset_ > 0)
+    {
+        fileMode |= std::ios::app; // Append mode: write at end of file
+    }
+
+    std::ofstream outFile(partPath, fileMode);
     if (!outFile)
     {
         lastError_ = fmt::format("Cannot open file for writing: {}", partPath.string());
         return false;
     }
 
-    // Configure CURL for this request
-
-    // 1. Set the URL
+    // 1. Set URL
     curl_easy_setopt(curl_.get(), CURLOPT_URL, url.c_str());
 
     // 2. Set write callback and pass file stream as context
@@ -101,6 +137,8 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     startTime_ = std::chrono::steady_clock::now();
     lastDownloaded_ = 0;
     lastProgressTime_ = startTime_;
+    lastPrintedTime_ = startTime_;
+    lastPrintedPercentage_ = -1.0;
     diskSpaceChecked_ = false;
     currentDestination_ = finalPath;
 
@@ -110,12 +148,11 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     CURLcode headRes = curl_easy_perform(curl_.get());
 
     curl_off_t contentLength = 0;
-    
     if (headRes == CURLE_OK)
     {
         curl_easy_getinfo(curl_.get(), CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
     }
-    
+
     // Check disk space if we know the size (from HEAD or we'll check in progress callback)
     if (contentLength > 0)
     {
@@ -125,12 +162,24 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
             std::filesystem::remove(partPath); // Clean up .part file
             return false;
         }
-        diskSpaceChecked_ = true;  // Mark as checked
+        diskSpaceChecked_ = true; // Mark as checked
     }
 
     // Reset to actual download (not HEAD request)
     curl_easy_setopt(curl_.get(), CURLOPT_NOBODY, 0L);
     curl_easy_setopt(curl_.get(), CURLOPT_HTTPGET, 1L);
+
+    // Configure resume if we have a partial file
+    if (resumeOffset_ > 0)
+    {
+        // Tell libcurl to request bytes starting from resumeOffset_
+        // Format: "bytes=N-" means "from byte N to end of file"
+        curl_easy_setopt(curl_.get(), CURLOPT_RESUME_FROM_LARGE, resumeOffset_);
+    }
+    else
+    {
+        curl_easy_setopt(curl_.get(), CURLOPT_RESUME_FROM_LARGE, 0L);
+    }
 
     // Perform the download
     CURLcode res = curl_easy_perform(curl_.get());
@@ -153,14 +202,69 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     long httpCode = 0;
     curl_easy_getinfo(curl_.get(), CURLINFO_RESPONSE_CODE, &httpCode);
 
-    if (httpCode >= 400)
+    // Handle range request responses
+    if (resumeOffset_ > 0 && httpCode == 200)
+    {
+        // Server sent status 200 instead of 206 = doesn't support ranges
+        // This means it sent the ENTIRE file, ignoring our Range header
+        fmt::print("\nServer doesn't support resume. Restarting download from beginning...\n");
+
+        // Close and delete the .part file
+        outFile.close();
+        try
+        {
+            std::filesystem::remove(partPath);
+        }
+        catch (...)
+        {
+            // Ignore cleanup errors
+        }
+
+        // Retry download from scratch (no range request this time)
+        resumeOffset_ = 0;
+        return downloadFile(url, destination); // Recursive call
+    }
+    else if (resumeOffset_ > 0 && httpCode == 206)
+    {
+        // Success! Server supports ranges and sent partial content
+        fmt::print("\nResume successful! Continued from byte {}.\n", resumeOffset_);
+    }
+    else if (httpCode >= 400)
     {
         lastError_ = fmt::format("HTTP error {}: {}", httpCode, getHttpStatusText(httpCode));
         // Leave .part file for debugging
         return false;
     }
 
-    // 8. Success! Rename .part to final filename (atomic operation)
+    // 8. Verify file size (optional but recommended for integrity)
+    try
+    {
+        curl_off_t finalSize = static_cast<curl_off_t>(std::filesystem::file_size(partPath));
+        curl_off_t expectedSize = 0;
+        curl_easy_getinfo(curl_.get(), CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &expectedSize);
+
+        // Only check if server provided Content-Length
+        if (expectedSize > 0)
+        {
+            curl_off_t totalExpected = (resumeOffset_ > 0) ? resumeOffset_ + expectedSize : expectedSize;
+
+            if (finalSize != totalExpected)
+            {
+                lastError_ = fmt::format("File size mismatch: expected {} but got {}",
+                                         formatBytes(totalExpected),
+                                         formatBytes(finalSize));
+                // Leave .part file for debugging
+                return false;
+            }
+        }
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        // If we can't verify size, log warning but continue
+        fmt::print(stderr, "Warning: Could not verify file size: {}\n", e.what());
+    }
+
+    // 9. Success! Rename .part to final filename (atomic operation)
     try
     {
         std::filesystem::rename(partPath, finalPath);
@@ -200,40 +304,93 @@ int HttpClient::progressCallback(void *clientp,
         client->diskSpaceChecked_ = true;
     }
 
-    // Throttle updates to once per 200ms to avoid terminal flooding
     auto now = std::chrono::steady_clock::now();
-    auto timeSinceLastUpdate = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   now - client->lastProgressTime_)
-                                   .count();
-
-    // Only update if 200ms have passed (unless download is complete)
+    auto timeSinceStart = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now - client->startTime_)
+                              .count();
     bool isComplete = (dltotal > 0 && dlnow >= dltotal);
-    if (timeSinceLastUpdate < 200 && !isComplete)
-    {
-        return 0; // Skip this update
-    }
 
-    // Update last progress time
-    client->lastProgressTime_ = now;
+    if (client->isTerminalOutput_)
+    {
+        auto timeSinceLastUpdate = std::chrono::duration_cast<std::chrono::milliseconds>(now - client->lastProgressTime_).count();
+
+        // Throttle updates for terminal output
+        if (!isComplete)
+        {
+            // Don't show progress in the first 500ms (prevents flashing for instant downloads)
+            if (timeSinceStart < 500)
+            {
+                return 0;
+            }
+
+            // Update at most 5 times per second (200ms interval)
+            if (timeSinceLastUpdate < 200)
+            {
+                return 0;
+            }
+        }
+
+        client->lastProgressTime_ = now;
+    }
+    else
+    {
+        auto timeSinceLastPrint = std::chrono::duration_cast<std::chrono::milliseconds>(now - client->lastPrintedTime_).count();
+
+        // For non-terminal output (e.g., piped to file), print less frequently
+        if (!isComplete && timeSinceLastPrint < 1000)
+        {
+            return 0;
+        }
+    }
 
     // If we don't know the total size, show basic progress
     if (dltotal == 0)
     {
-        fmt::print("\rDownloaded: {} | Speed: calculating...", client->formatBytes(dlnow));
-        std::cout.flush();
+        // For resumed downloads, add the resume offset to show total progress
+        curl_off_t totalDownloaded = dlnow + client->resumeOffset_;
+
+        if (client->isTerminalOutput_)
+        {
+            fmt::print("\rDownloaded: {} | Speed: calculating...\033[K", client->formatBytes(totalDownloaded));
+            std::fflush(stdout);
+        }
+        else
+        {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - client->startTime_).count();
+            fmt::print("Downloaded: {} | Elapsed: {}\n",
+                       client->formatBytes(totalDownloaded),
+                       client->formatDuration(static_cast<long>(elapsed)));
+            client->lastPrintedTime_ = now;
+        }
         return 0;
     }
 
-    double percentage = (static_cast<double>(dlnow) / dltotal) * 100.0;
+    // For resumed downloads:
+    // - dltotal = size of THIS request (remaining bytes)
+    // - dlnow = bytes downloaded in THIS session
+    // We need to add resumeOffset_ to show actual total progress
+    curl_off_t totalDownloaded = dlnow + client->resumeOffset_;
+    curl_off_t totalSize = dltotal + client->resumeOffset_;
+
+    double percentage = (static_cast<double>(totalDownloaded) / totalSize) * 100.0;
+
+    // Avoid over-printing in non-terminal environments
+    if (!client->isTerminalOutput_ && !isComplete)
+    {
+        if (client->lastPrintedPercentage_ >= 0.0 && percentage < client->lastPrintedPercentage_ + 1.0)
+        {
+            return 0;
+        }
+    }
 
     // Calculate elapsed time (reuse 'now' from throttling check above)
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - client->startTime_).count();
 
-    // Calculate download speed (bytes per second)
+    // Calculate download speed (bytes per second) - use dlnow for current session speed
     double speed = (elapsed > 0) ? static_cast<double>(dlnow) / elapsed : 0.0;
 
-    // Calculate ETA (Estimated Time of Arrival)
-    long eta = (speed > 0) ? static_cast<long>((dltotal - dlnow) / speed) : 0;
+    // Calculate ETA - use remaining bytes (totalSize - totalDownloaded)
+    long eta = (speed > 0) ? static_cast<long>((totalSize - totalDownloaded) / speed) : 0;
 
     // Create progress bar (50 characters wide)
     int barWidth = 50;
@@ -271,16 +428,31 @@ int HttpClient::progressCallback(void *clientp,
         speedStr = fmt::format("{:.0f} B/s", speed);
     }
 
-    // Print progress (using \r for in-place update)
-    // \033[K clears from cursor to end of line (removes artifacts)
-    fmt::print("\r{} {:.1f}% | {} / {} | {} | ETA: {}\033[K",
-               bar,
-               percentage,
-               client->formatBytes(dlnow),
-               client->formatBytes(dltotal),
-               speedStr,
-               client->formatDuration(eta));
-    std::cout.flush();
+    if (client->isTerminalOutput_)
+    {
+        fmt::print("\r{} {:.1f}% | {} / {} | {} | ETA: {}\033[K",
+                   bar,
+                   percentage,
+                   client->formatBytes(totalDownloaded),
+                   client->formatBytes(totalSize),
+                   speedStr,
+                   client->formatDuration(eta));
+        std::fflush(stdout);
+        client->lastPrintedTime_ = now;
+    }
+    else
+    {
+        fmt::print("{} {:.1f}% | {} / {} | {} | ETA: {}\n",
+                   bar,
+                   percentage,
+                   client->formatBytes(totalDownloaded),
+                   client->formatBytes(totalSize),
+                   speedStr,
+                   client->formatDuration(eta));
+        client->lastPrintedTime_ = now;
+    }
+
+    client->lastPrintedPercentage_ = percentage;
 
     // Return 0 to continue download (non-zero would abort)
     return 0;
@@ -289,9 +461,9 @@ int HttpClient::progressCallback(void *clientp,
 // Format bytes into human-readable string
 std::string HttpClient::formatBytes(curl_off_t bytes) const
 {
-    const double KB = 1024.0;
-    const double MB = KB * 1024.0;
-    const double GB = MB * 1024.0;
+    constexpr double KB = 1024.0;
+    constexpr double MB = KB * 1024.0;
+    constexpr double GB = MB * 1024.0;
 
     if (bytes >= GB)
     {
@@ -452,3 +624,4 @@ std::filesystem::path HttpClient::makePartPath(const std::filesystem::path &dest
     partPath += ".part";
     return partPath;
 }
+
