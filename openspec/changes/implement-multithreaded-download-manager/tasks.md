@@ -176,11 +176,11 @@ downloadFile("http://httpbin.org/bytes/999999999999", "huge.bin");  // Should ch
 **Goal**: Implement resumable downloads using HTTP `Range` headers.
 
 **Acceptance Criteria**:
-- [ ] Detect existing `.part` file and its size
-- [ ] Send `Range: bytes=N-` header to resume from byte N
-- [ ] Append new data to existing `.part` file
-- [ ] Handle servers that don't support ranges (restart download)
-- [ ] Verify final file size matches `Content-Length`
+- [x] Detect existing `.part` file and its size
+- [x] Send `Range: bytes=N-` header to resume from byte N
+- [x] Append new data to existing `.part` file
+- [x] Handle servers that don't support ranges (restart download)
+- [x] Verify final file size matches `Content-Length`
 
 **Approach**:
 1. Check if `destination.part` exists; get file size with `std::filesystem::file_size()`
