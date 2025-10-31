@@ -30,7 +30,16 @@ int main(int argc, char *argv[])
         // Perform download
         if (client.downloadFile(url, destination))
         {
-            fmt::print("✓ Download completed successfully!\n");
+            fmt::print("✓ Download completed successfully");
+
+            // Show retry count if there were any retries
+            int retryCount = client.getRetryCount();
+            if (retryCount > 0)
+            {
+                fmt::print(" (after {} {})", retryCount, retryCount == 1 ? "retry" : "retries");
+            }
+            fmt::print("!\n");
+
             return 0;
         }
         else

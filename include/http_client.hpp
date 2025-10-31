@@ -38,12 +38,28 @@ public:
      */
     std::string getLastError() const { return lastError_; }
 
+    int getRetryCount() const { return retryCount_; }
+
 private:
     // CURL handle with custom deleter (RAII pattern)
     std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl_;
 
     // Last error message
     std::string lastError_;
+
+    int retryCount_ = 0;
+
+    /**
+     * Error classification for retry logic.
+     * Transient errors are temporary (network issues) and worth retrying.
+     * Permanent errors are unrecoverable (404, invalid URL) and should fail immediately.
+     */
+    enum class ErrorType
+    {
+        Transient, // Temporary failure - retry might succeed
+        Permanent, // Permanent failure - retrying won't help
+        Unknown    // Uncertain - treat conservatively as transient
+    };
 
     /**
      * Static callback for libcurl to write downloaded data.
@@ -123,6 +139,15 @@ private:
      */
     std::filesystem::path makePartPath(const std::filesystem::path &destination) const;
 
+    /**
+     * Classify a CURL error to determine if retry is appropriate.
+     *
+     * @param code CURL error code from failed operation
+     * @param httpCode HTTP status code (0 if no HTTP response received)
+     * @return ErrorType indicating whether to retry
+     */
+    ErrorType classifyError(CURLcode code, long httpCode) const;
+
     std::chrono::steady_clock::time_point startTime_;
     curl_off_t lastDownloaded_ = 0;
     std::chrono::steady_clock::time_point lastProgressTime_;
@@ -136,4 +161,8 @@ private:
 
     // Resume support: offset to resume from (0 = start from beginning)
     curl_off_t resumeOffset_ = 0;
+
+    // Retry configuration
+    static constexpr int MAX_RETRY_ATTEMPTS = 3;
+    static constexpr int INITIAL_RETRY_DELAY_MS = 1000; // 1 second
 };

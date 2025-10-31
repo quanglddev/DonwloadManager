@@ -7,6 +7,8 @@
 #include <unistd.h>
 
 #include <fmt/core.h>
+#include <thread>
+#include <random>
 
 HttpClient::HttpClient() : curl_(curl_easy_init(), curl_easy_cleanup)
 {
@@ -52,6 +54,9 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     // Convert to filesystem path for easier manipulation
     std::filesystem::path finalPath(destination);
     std::filesystem::path partPath = makePartPath(finalPath);
+
+    // Reset retry count for this download
+    retryCount_ = 0;
 
     // 1. Ensure destination directory exists
     if (!ensureDirectoryExists(finalPath))
@@ -181,22 +186,110 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
         curl_easy_setopt(curl_.get(), CURLOPT_RESUME_FROM_LARGE, 0L);
     }
 
-    // Perform the download
-    CURLcode res = curl_easy_perform(curl_.get());
+    // Perform the download with retry logic
+    CURLcode res;
+    int attemptCount = 0;
+    bool shouldRetry = false;
 
-    // Close file before checking result (ensures data is flushed)
-    outFile.close();
+    do
+    {
+        // Perform download attempt
+        res = curl_easy_perform(curl_.get());
 
-    // Print newline after progress bar
-    fmt::print("\n");
+        // Close file after each attempt (ensures data is flushed)
+        outFile.close();
 
-    // Check for errors
+        // Print newline after progress bar
+        fmt::print("\n");
+
+        // Check if download succeeded
+        if (res == CURLE_OK)
+        {
+            break; // Success - exit retry loop
+        }
+
+        // Download failed - classify error
+        long httpCode = 0;
+        curl_easy_getinfo(curl_.get(), CURLINFO_RESPONSE_CODE, &httpCode);
+
+        ErrorType errorType = classifyError(res, httpCode);
+        attemptCount++;
+
+        // Determine if we should retry
+        shouldRetry = (errorType == ErrorType::Transient || errorType == ErrorType::Unknown) &&
+                      (attemptCount < MAX_RETRY_ATTEMPTS);
+
+        if (shouldRetry)
+        {
+            // Calculate exponential backoff delay: 1s, 2s, 4s + jitter to prevent thundering herd
+            int baseDelayMs = INITIAL_RETRY_DELAY_MS * (1 << (attemptCount - 1));
+            // Add random jitter: ±20% variation
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_int_distribution<> dis(-20, 20);
+            int jitterPercent = dis(gen);
+            int delayMs = baseDelayMs + (baseDelayMs * jitterPercent / 100);
+
+            fmt::print(stderr,
+                       "Download failed (attempt {}/{}): {}\n"
+                       "Retrying in {} seconds...\n",
+                       attemptCount, MAX_RETRY_ATTEMPTS,
+                       curl_easy_strerror(res),
+                       delayMs / 1000);
+
+            // Wait before retry
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+
+            // Reopen file in append mode for retry (resume from where we left off)
+            outFile.open(partPath, std::ios::binary | std::ios::app);
+            if (!outFile)
+            {
+                lastError_ = fmt::format("Cannot reopen file for retry: {}", partPath.string());
+                return false;
+            }
+
+            // Update curl options for resumed transfer
+            try
+            {
+                curl_off_t currentSize = std::filesystem::file_size(partPath);
+                if (currentSize > resumeOffset_)
+                {
+                    // We made some progress, resume from current position
+                    curl_easy_setopt(curl_.get(), CURLOPT_RESUME_FROM_LARGE, currentSize);
+                }
+            }
+            catch (...)
+            {
+                // If we can't get file size, just retry from current offset
+            }
+        }
+        else
+        {
+            // Permanent error or max retries exceeded
+            if (errorType == ErrorType::Permanent)
+            {
+                lastError_ = fmt::format("Download failed permanently: {}", curl_easy_strerror(res));
+            }
+            else
+            {
+                lastError_ = fmt::format("Download failed after {} attempts: {}",
+                                         attemptCount, curl_easy_strerror(res));
+            }
+            return false;
+        }
+
+    } while (shouldRetry);
+
+    // Store retry count for statistics
+    retryCount_ = attemptCount;
+
+    // If we reach here after loop, download succeeded
     if (res != CURLE_OK)
     {
-        lastError_ = fmt::format("Download failed: {}", curl_easy_strerror(res));
-        // Leave .part file for potential resume in TASK-005
         return false;
     }
+
+    // Continue with existing success logic (check HTTP code, verify file size, etc.)
 
     // Check HTTP response code
     long httpCode = 0;
@@ -625,3 +718,49 @@ std::filesystem::path HttpClient::makePartPath(const std::filesystem::path &dest
     return partPath;
 }
 
+// Classify error for retry logic
+HttpClient::ErrorType HttpClient::classifyError(CURLcode code, long httpCode) const
+{
+    // First, check CURL-level errors (network, DNS, etc.)
+    switch (code)
+    {
+    // Transient network errors - worth retrying
+    case CURLE_OPERATION_TIMEDOUT:   // Server didn't respond in time
+    case CURLE_COULDNT_RESOLVE_HOST: // DNS lookup failed (might be temporary)
+    case CURLE_COULDNT_CONNECT:      // Connection refused (server might be restarting)
+    case CURLE_PARTIAL_FILE:         // Transfer ended early (network interruption)
+    case CURLE_RECV_ERROR:           // Error receiving data (network glitch)
+    case CURLE_SEND_ERROR:           // Error sending data (network glitch)
+    case CURLE_GOT_NOTHING:          // Server sent no data (might be overloaded)
+        return ErrorType::Transient;
+
+    // Permanent errors - retrying won't help
+    case CURLE_URL_MALFORMAT:          // Invalid URL syntax
+    case CURLE_UNSUPPORTED_PROTOCOL:   // Protocol not supported (http/https/ftp)
+    case CURLE_FILE_COULDNT_READ_FILE: // Can't read local file
+    case CURLE_OUT_OF_MEMORY:          // System resource exhaustion
+    case CURLE_SSL_CERTPROBLEM:        // SSL certificate invalid
+    case CURLE_SSL_CIPHER:             // SSL cipher negotiation failed
+        return ErrorType::Permanent;
+
+    // No CURL error - check HTTP status code
+    case CURLE_OK:
+        if (httpCode >= 400 && httpCode < 500)
+        {
+            // 4xx Client Errors - usually permanent
+            // 404 Not Found, 403 Forbidden, 401 Unauthorized
+            return ErrorType::Permanent;
+        }
+        else if (httpCode >= 500 && httpCode < 600)
+        {
+            // 5xx Server Errors - usually transient (server overload, temporary issues)
+            // 500 Internal Server Error, 503 Service Unavailable
+            return ErrorType::Transient;
+        }
+        return ErrorType::Unknown;
+
+    // Unknown CURL error - be conservative and retry
+    default:
+        return ErrorType::Unknown;
+    }
+}

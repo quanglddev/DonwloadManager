@@ -218,11 +218,11 @@ downloadFile("http://httpbin.org/bytes/999999999999", "huge.bin");  // Should ch
 **Goal**: Handle transient network errors with exponential backoff retry.
 
 **Acceptance Criteria**:
-- [ ] Distinguish transient errors (timeout, connection reset) from permanent errors (404, 403)
-- [ ] Retry transient errors up to 3 times with delays: 1s, 2s, 4s
-- [ ] Log each retry attempt with reason
-- [ ] Fail permanently after max retries exceeded
-- [ ] User-friendly error messages for common failures
+- [x] Distinguish transient errors (timeout, connection reset) from permanent errors (404, 403)
+- [x] Retry transient errors up to 3 times with delays: 1s, 2s, 4s
+- [x] Log each retry attempt with reason
+- [x] Fail permanently after max retries exceeded
+- [x] User-friendly error messages for common failures
 
 **Approach**:
 1. Create `enum class ErrorType { Transient, Permanent, Unknown }`
