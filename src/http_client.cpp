@@ -49,7 +49,7 @@ size_t HttpClient::writeCallback(char *ptr, size_t size, size_t nmemb, void *use
     return totalSize;
 }
 
-bool HttpClient::downloadFile(const std::string &url, const std::string &destination)
+bool HttpClient::downloadFile(const std::string &url, const std::string &destination, int timeoutSeconds)
 {
     // Convert to filesystem path for easier manipulation
     std::filesystem::path finalPath(destination);
@@ -130,8 +130,8 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
     curl_easy_setopt(curl_.get(), CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl_.get(), CURLOPT_MAXREDIRS, 5L); // Limit redirect chain
 
-    // 5. Set timeout to prevent hanging forever
-    curl_easy_setopt(curl_.get(), CURLOPT_TIMEOUT, 300L);       // 5 minutes max
+    // 5. Set timeout to prevent hanging forever (configurable via CLI)
+    curl_easy_setopt(curl_.get(), CURLOPT_TIMEOUT, static_cast<long>(timeoutSeconds));
     curl_easy_setopt(curl_.get(), CURLOPT_CONNECTTIMEOUT, 30L); // 30s to establish connection
 
     // 6. Enable progress tracking
@@ -217,7 +217,7 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
 
         // Determine if we should retry
         shouldRetry = (errorType == ErrorType::Transient || errorType == ErrorType::Unknown) &&
-                      (attemptCount < MAX_RETRY_ATTEMPTS);
+                      (attemptCount < maxRetryAttempts_);
 
         if (shouldRetry)
         {
@@ -233,7 +233,7 @@ bool HttpClient::downloadFile(const std::string &url, const std::string &destina
             fmt::print(stderr,
                        "Download failed (attempt {}/{}): {}\n"
                        "Retrying in {} seconds...\n",
-                       attemptCount, MAX_RETRY_ATTEMPTS,
+                       attemptCount, maxRetryAttempts_,
                        curl_easy_strerror(res),
                        delayMs / 1000);
 

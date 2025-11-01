@@ -31,7 +31,7 @@ public:
      * @param destination Local file path to save
      * @return true on success, false on failure
      */
-    bool downloadFile(const std::string &url, const std::string &destination);
+    bool downloadFile(const std::string &url, const std::string &destination, int timeoutSeconds = 300);
 
     /**
      * Get detailed error message from last operation.
@@ -39,6 +39,12 @@ public:
     std::string getLastError() const { return lastError_; }
 
     int getRetryCount() const { return retryCount_; }
+
+    /**
+     * Set maximum retry attempts for transient errors.
+     * @param maxRetries Number of retry attempts (default: 3)
+     */
+    void setMaxRetries(int maxRetries) { maxRetryAttempts_ = maxRetries; }
 
 private:
     // CURL handle with custom deleter (RAII pattern)
@@ -163,6 +169,6 @@ private:
     curl_off_t resumeOffset_ = 0;
 
     // Retry configuration
-    static constexpr int MAX_RETRY_ATTEMPTS = 3;
+    int maxRetryAttempts_ = 3;                          // Configurable (default: 3)
     static constexpr int INITIAL_RETRY_DELAY_MS = 1000; // 1 second
 };

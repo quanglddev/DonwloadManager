@@ -25,3 +25,8 @@ cmake --build build/Release --config Release
 # Verify executable exists
 ls -lh build/Release/bin/download_manager
 ```
+
+#### After putting new stuff in conan
+```bash
+conan install . --output-folder=build/Release --build=missing --settings=build_type=Release
+```

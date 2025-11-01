@@ -24,6 +24,7 @@ endif()
 # Find packages installed by Conan
 find_package(fmt REQUIRED)
 find_package(CURL REQUIRED)
+find_package(CLI11 REQUIRED)
 
 # Main executable
 add_executable(download_manager
@@ -38,4 +39,5 @@ target_include_directories(download_manager PRIVATE
 target_link_libraries(download_manager PRIVATE
     fmt::fmt
     CURL::libcurl
+    CLI11::CLI11
 )

@@ -261,11 +261,11 @@ downloadFile("http://httpbin.org/bytes/999999999999", "huge.bin");  // Should ch
 **Goal**: Parse CLI arguments for URL, destination, and options.
 
 **Acceptance Criteria**:
-- [ ] Accept URL and destination as positional arguments
-- [ ] Support optional flags: `--retry-count`, `--timeout`, `--output`
-- [ ] Display help message with `--help` or `-h`
-- [ ] Validate arguments (URL format, writable destination)
-- [ ] Set defaults for optional parameters
+- [x] Accept URL and destination as positional arguments
+- [x] Support optional flags: `--retry-count`, `--timeout`, `--output`
+- [x] Display help message with `--help` or `-h`
+- [x] Validate arguments (URL format, writable destination)
+- [x] Set defaults for optional parameters
 
 **Approach**:
 1. Use a simple argument parser (manual or library like CLI11/argparse)
