@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp> // CLI11 main header
 #include "http_client.hpp"
 #include "config.hpp"
+#include "checksum.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -56,6 +57,19 @@ int main(int argc, char *argv[])
         ->check(CLI::PositiveNumber) // Built-in validator: must be positive
         ->default_val(300);
 
+    // Optional flag: --checksum
+    app.add_option("-c,--checksum", config.expectedChecksum,
+                   "Expected checksum in format 'algorithm:hexhash' (e.g., sha256:abc123...)")
+        ->check([](const std::string &cs) -> std::string {
+            if (cs.empty()) return "";
+            try {
+                ChecksumVerifier::parseChecksum(cs);
+                return ""; // Valid
+            } catch (const std::exception &e) {
+                return std::string("Invalid checksum format: ") + e.what();
+            }
+        });
+
     // Optional flag: --version (for help display only, actual handling is done above)
     app.add_flag("-v,--version", config.showVersion, "Display version information");
 
@@ -84,7 +98,11 @@ int main(int argc, char *argv[])
     fmt::print("  URL:         {}\n", config.url);
     fmt::print("  Destination: {}\n", config.destination);
     fmt::print("  Max Retries: {}\n", config.maxRetries);
-    fmt::print("  Timeout:     {}s\n\n", config.timeoutSeconds);
+    fmt::print("  Timeout:     {}s\n", config.timeoutSeconds);
+    if (config.expectedChecksum) {
+        fmt::print("  Checksum:    {}\n", config.expectedChecksum.value());
+    }
+    fmt::print("\n");
 
     // ====================================================================
     // PERFORM DOWNLOAD
@@ -112,6 +130,48 @@ int main(int argc, char *argv[])
                 fmt::print(" (after {} {})", retryCount, retryCount == 1 ? "retry" : "retries");
             }
             fmt::print("!\n");
+
+            // Verify checksum if provided
+            if (config.expectedChecksum)
+            {
+                fmt::print("\n");
+                fmt::print("Verifying checksum...\n");
+                try
+                {
+                    bool isValid = ChecksumVerifier::verify(
+                        config.destination,
+                        config.expectedChecksum.value());
+
+                    if (isValid)
+                    {
+                        fmt::print("✓ Checksum verification passed!\n");
+                    }
+                    else
+                    {
+                        fmt::print(stderr, "✗ Checksum verification FAILED!\n");
+                        fmt::print(stderr, "  Expected: {}\n", config.expectedChecksum.value());
+                        fmt::print(stderr, "  File may be corrupted or incomplete.\n");
+                        
+                        // Move file to quarantine
+                        std::filesystem::path quarantinePath = 
+                            std::filesystem::path(config.destination).parent_path() / "quarantine";
+                        std::filesystem::create_directories(quarantinePath);
+                        
+                        std::filesystem::path quarantineFile = 
+                            quarantinePath / std::filesystem::path(config.destination).filename();
+                        
+                        std::filesystem::rename(config.destination, quarantineFile);
+                        fmt::print(stderr, "  File moved to: {}\n", quarantineFile.string());
+                        
+                        return 1;
+                    }
+                }
+                catch (const std::exception &e)
+                {
+                    fmt::print(stderr, "✗ Checksum verification error: {}\n", e.what());
+                    return 1;
+                }
+            }
 
             return 0;
         }

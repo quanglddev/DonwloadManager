@@ -301,11 +301,11 @@ downloadFile("http://httpbin.org/bytes/999999999999", "huge.bin");  // Should ch
 **Goal**: Verify downloaded file integrity using SHA-256 checksums.
 
 **Acceptance Criteria**:
-- [ ] Compute SHA-256 hash of downloaded file
-- [ ] Compare with expected hash (provided via CLI or sidecar file)
-- [ ] Report verification success/failure
-- [ ] Quarantine corrupted files to separate directory
-- [ ] Support other hash algorithms (MD5, SHA-1) as optional
+- [x] Compute SHA-256 hash of downloaded file
+- [x] Compare with expected hash (provided via CLI or sidecar file)
+- [x] Report verification success/failure
+- [x] Quarantine corrupted files to separate directory
+- [x] Support other hash algorithms (MD5, SHA-1) as optional
 
 **Approach**:
 1. Use OpenSSL (often available with libcurl) or standalone SHA-256 implementation

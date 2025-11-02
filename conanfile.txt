@@ -2,6 +2,7 @@
 fmt/10.2.1
 libcurl/[>=8 <9]
 cli11/2.6.0
+openssl/3.3.2
 
 [generators]
 CMakeDeps

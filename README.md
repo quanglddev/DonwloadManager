@@ -20,10 +20,10 @@ cmake -B build/Release \
     -DCMAKE_TOOLCHAIN_FILE=build/Release/conan_toolchain.cmake
 
 # Build
-cmake --build build/Release --config Release
+cmake --build build
 
 # Verify executable exists
-ls -lh build/Release/bin/download_manager
+ls -lh build/bin/download_manager
 ```
 
 #### After putting new stuff in conan

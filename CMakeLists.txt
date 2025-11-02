@@ -25,11 +25,13 @@ endif()
 find_package(fmt REQUIRED)
 find_package(CURL REQUIRED)
 find_package(CLI11 REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # Main executable
 add_executable(download_manager
     src/main.cpp
     src/http_client.cpp
+    src/checksum.cpp
 )
 
 target_include_directories(download_manager PRIVATE
@@ -40,4 +42,6 @@ target_link_libraries(download_manager PRIVATE
     fmt::fmt
     CURL::libcurl
     CLI11::CLI11
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
